@@ -5,13 +5,12 @@ const saveStep = async (req, res) => {
         const userId = req.user.userId;
         const pool = await connectDB();
         
-        // Frontend alag-alag format me data bhej sakta hai, isliye hum common keys pakad rahe hain
+        
         const gender = req.body.gender || null;
         const bloodGroup = req.body.bloodGroup || req.body.blood_group || null;
         const heightCm = req.body.heightCm || req.body.height_cm || null;
         const weightKg = req.body.weightKg || req.body.weight_kg || null;
         
-        // FullName ko FirstName aur LastName me split karne ka logic (agar frontend FullName bhejta hai)
         let firstName = req.body.firstName || req.body.first_name || null;
         let lastName = req.body.lastName || req.body.last_name || null;
         
@@ -21,8 +20,7 @@ const saveStep = async (req, res) => {
             lastName = parts.slice(1).join(' ') || null;
         }
 
-        // UPGRADE: Ab JSON blob ki jagah direct Table Columns update kar rahe hain
-        // ISNULL use kiya hai taaki agar koi field null aaye, toh purana data delete na ho
+      
         await pool.request()
             .input('UserId', sql.Int, userId)
             .input('FirstName', sql.NVarChar, firstName)
@@ -43,7 +41,6 @@ const saveStep = async (req, res) => {
                 WHERE UserId = @UserId
             `);
 
-        // Wapas updated data bhej rahe hain taaki frontend ko confirmation mil jaye
         const updatedData = { firstName, lastName, gender, bloodGroup, heightCm, weightKg };
         
         return res.json({ success: true, data: updatedData, message: "Step saved successfully", error: null });
@@ -69,7 +66,7 @@ const completeOnboarding = async (req, res) => {
 
         const user = result.recordset[0];
         
-        // Validation: Height aur Weight zaroori hain
+        // Validation: Height and weight are required fields
         if (!user.HeightCm || !user.WeightKg) {
             return res.status(400).json({ success: false, data: {}, message: "Height and Weight are required to complete onboarding", error: "ONBOARDING_INCOMPLETE" }); 
         }
@@ -90,4 +87,56 @@ const completeOnboarding = async (req, res) => {
     }
 };
 
-module.exports = { saveStep, completeOnboarding };
+const getCompletedOnboardingUsers = async (req, res) => {
+    try {
+        const pool = await connectDB();
+
+        // Query to fetch all users who have completed their onboarding
+        const result = await pool.request()
+            .query(`
+                SELECT 
+                    UserId, 
+                    FirstName, 
+                    LastName, 
+                    mobile,
+                    Gender, 
+                    BloodGroup, 
+                    HeightCm, 
+                    WeightKg, 
+                    onboardingcompleted 
+                FROM users 
+                WHERE onboardingcompleted = 1
+            `);
+
+        // Check if any users exist
+        if (result.recordset.length === 0) {
+             return res.status(404).json({ 
+                 success: false, 
+                 data: [], 
+                 message: "No users found with completed onboarding", 
+                 error: "NOT_FOUND" 
+             });
+        }
+
+        return res.status(200).json({ 
+            success: true, 
+            data: result.recordset, 
+            message: "Fetched onboarded users successfully", 
+            error: null 
+        });
+    } catch (error) {
+        console.error("Error in getCompletedOnboardingUsers:", error);
+        return res.status(500).json({ 
+            success: false, 
+            data: [], 
+            message: "Server Error", 
+            error: "INTERNAL_ERROR" 
+        });
+    }
+};
+
+
+
+
+
+module.exports = { saveStep, completeOnboarding,getCompletedOnboardingUsers };

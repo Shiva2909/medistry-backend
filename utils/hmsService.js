@@ -8,11 +8,11 @@ const axios = require('axios');
  * @returns {string} Signed JWT token
  */
 const getManagementToken = () => {
-    const payload = {
+    const payload = { 
         access_key: process.env.HMS_ACCESS_KEY,
         type: 'management',
         version: 2,
-        jti: uuidv4(),
+        jti: uuidv4(),   
         iat: Math.floor(Date.now() / 1000),
         nbf: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 24 * 3600, // Valid for 24 hours
@@ -71,4 +71,25 @@ const generateVideoRoomAndCodes = async (appointmentId) => {
     }
 };
 
-module.exports = { generateVideoRoomAndCodes };
+/**
+ * @function disableVideoRoom
+ * @description Disables the room on 100ms server so direct links stop working.
+ */
+const disableVideoRoom = async (roomId) => {
+    const token = getManagementToken(); 
+    try {
+        await axios.post(`https://api.100ms.live/v2/rooms/${roomId}`, 
+        { enabled: false }, // it will lock the room permanantly
+        { headers: { Authorization: `Bearer ${token}` } });
+        console.log(`[100ms] Room ${roomId} disabled successfully.`);
+    } catch (error) {
+        console.error("[100ms Error] Failed to disable room:", error.response?.data || error.message);
+    }
+};
+
+module.exports = { generateVideoRoomAndCodes, disableVideoRoom };
+
+
+
+
+

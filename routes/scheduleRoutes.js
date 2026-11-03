@@ -1,19 +1,30 @@
 const express = require('express');
 const router = express.Router();
 const scheduleController = require('../controllers/scheduleController');
-const authenticateToken = require('../middleware/auth');
+const { authenticateToken, otpLimiter } = require('../middleware/auth');
+const { checkActiveSubscription } = require('../middleware/checkSubscription');
+const { enforceVerifiedReport } = require('../middleware/verifyReportFlow'); 
 
 
-// === ADMIN & DOCTOR ROUTES for creating schedule and leaves and  slots 
-router.post('/master', scheduleController.addMasterSchedule);
-router.post('/leave', scheduleController.addLeave);
-router.post('/generate', scheduleController.generateDailySlots);
-
-// === PATIENT ROUTES for checking available slots and book there schedule
-router.get('/slots/:doctorId/:date', scheduleController.getAvailableSlots);
-router.put('/book',authenticateToken, scheduleController.bookSlot);
-router.put('/cancel',authenticateToken, scheduleController.cancelAppointment);
 
 
+
+
+
+// === ADMIN & DOCTOR ROUTES for creating schedule, leaves, and slots ===
+// Added authenticateToken to prevent unauthorized fake slot generation
+router.post('/master', authenticateToken, scheduleController.addMasterSchedule);
+router.post('/leave', authenticateToken, scheduleController.addLeave);
+router.post('/generate', authenticateToken, scheduleController.generateDailySlots);
+
+// === PATIENT ROUTES for checking available slots and booking ===
+// Added authenticateToken back so req.user.userId works in the Smart Slot Engine
+router.get('/slots/:date', authenticateToken, scheduleController.getAvailableSlots);
+
+// Booking securely protected by both Auth and Active Subscription (Nano pack or Long-term)
+router.put('/book', authenticateToken, checkActiveSubscription, scheduleController.bookSlot);
+
+
+router.put('/cancel', authenticateToken, scheduleController.cancelAppointment);
 
 module.exports = router;

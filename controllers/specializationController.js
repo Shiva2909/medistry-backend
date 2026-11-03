@@ -38,6 +38,6 @@ const getSpecializations = async (req, res) => {
 };
 
 module.exports = {
-    addSpecialization,  
+    addSpecialization,
     getSpecializations
 };

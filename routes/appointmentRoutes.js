@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const appointmentController = require('../controllers/appointmentController');
-const authenticateToken = require('../middleware/auth');
+const {authenticateToken,otpLimiter} = require('../middleware/auth');
 
 // === PATIENT ROUTES ===
 // This api is used to show there all booking past and present 
@@ -13,4 +13,9 @@ router.get('/patient',authenticateToken, appointmentController.getPatientAppoint
 // Endpoint: GET /api/appointments/doctor?date=YYYY-MM-DD
 router.get('/doctor', authenticateToken, appointmentController.getDoctorQueue);
 
-module.exports = router;
+// doctor routes =
+// this api help doctor to see there all patients lists
+
+router.get('/doctor/patients', authenticateToken, appointmentController.getDoctorPatients);
+
+module.exports = router;  

@@ -29,11 +29,29 @@ const router = express.Router();
 const doctorController = require('../controllers/doctorController');
 
 // Middleware imported from your auth file to verify admin roles
-// const { verifyToken, isAdmin } = require('../middlewares/auth');
+const { authenticateToken } = require('../middleware/auth');
+
 
 // === PUBLIC ROUTES (Accessible to Patients & Everyone) ===
+
+// doctor information for patient dashboard 
+
 router.get('/', doctorController.getDoctorList);
-router.get('/:id', doctorController.getDoctorFullProfile);
+
+
+// doctor dashboard 
+
+// Protected: Logged-in Doctor gets their own full profile (Token based, no ID needed)
+router.get('/my-profile', authenticateToken, doctorController.getMyDoctorProfile);
+
+
+// for patient dashboard
+router.get('/dashboard-list',doctorController.getDoctorsForPatientDashboard);
+
+router.get('/dashboard-stats',authenticateToken,doctorController.getDoctorDashboardStats);
+
+
+
 
 // === ADMIN PROTECTED ROUTES (Master APIs - Admin Only) ===
 // Note: Once testing is complete, apply the middleware to these routes like this:
@@ -48,4 +66,8 @@ router.put('/:id', doctorController.updateDoctorFullProfile);
 // Soft Delete: Deactivate doctor profile without removing data from the database
 router.delete('/:id', doctorController.deleteDoctor);
 
+
+// doctor full profile 
+router.get('/:id', doctorController.getDoctorFullProfile);
+    
 module.exports = router;
