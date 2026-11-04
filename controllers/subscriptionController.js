@@ -2,12 +2,6 @@ const { connectDB, sql } = require('../db');
 
 /**
  * @function getAvailablePlans
- * @description Fetches all active subscription packages (Nano Package, 3-Month, 6-Month, etc.)
- * @route GET /api/subscriptions/plans
- * @access Public
- */
-/**
- * @function getAvailablePlans
  * @description Fetches active subscription packages and groups them by type (Entry vs Long-term)
  * @route GET /api/subscriptions/plans
  * @access Public
@@ -41,16 +35,42 @@ const getAvailablePlans = async (req, res) => {
         return res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
     }
 };
+
 /**
  * @function activateUserSubscription
- * @description Activates a plan post-payment. If it's a long-term Care Plan, 
- *              it permanently locks the patient to the prescribing doctor.
+ * @description Activates a plan manually via Admin/Postman HTTP Call.
  * @route POST /api/subscriptions/activate
- * @access Private (Admin/Payment Webhook)
+ * @access Private (Admin)
  */
 const activateUserSubscription = async (req, res) => {
     try {
         const { targetUserId, planId } = req.body; 
+        const result = await activateSubscriptionInternal(targetUserId, planId);
+
+        if (!result.success) {
+             return res.status(404).json({ success: false, message: result.message || "Activation Failed" });
+        }
+
+        return res.json({              
+            success: true, 
+            data: result.data,
+            message: result.message 
+        });
+
+    } catch (error) {
+        console.error("[Subscription] Activate Subscription Request Error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
+    }
+};
+
+// ========================================================================
+// INTERNAL FUNCTION (Called by Payment Controller after successful payment)
+// ========================================================================
+// ========================================================================
+// INTERNAL FUNCTION (Called by Payment Controller after successful payment)
+// ========================================================================
+const activateSubscriptionInternal = async (targetUserId, planId) => {
+    try {
         const pool = await connectDB();
 
         const planResult = await pool.request()
@@ -58,27 +78,28 @@ const activateUserSubscription = async (req, res) => {
             .query("SELECT PlanName, DurationMonths FROM SubscriptionPlans WHERE PlanId = @PlanId AND IsActive = 1");
 
         if (planResult.recordset.length === 0) {
-            return res.status(404).json({ success: false, message: "Invalid or Inactive Plan ID." });
+            console.error(`[Internal Activation] PlanId ${planId} not found or inactive.`);
+            return { success: false, message: "Invalid or Inactive Plan ID." };
         }
 
         const { PlanName, DurationMonths } = planResult.recordset[0];
 
+        // Expire old active plans
         await pool.request()
             .input('UserId', sql.Int, targetUserId)
             .query("UPDATE UserSubscriptions SET Status = 'Expired' WHERE UserId = @UserId AND Status = 'Active'");
 
+        // Insert new active plan (Removed PlanName from INSERT statement)
         const insertResult = await pool.request()
             .input('UserId', sql.Int, targetUserId)
             .input('PlanId', sql.Int, planId)
-            .input('PlanName', sql.VarChar, PlanName)
             .input('MonthsToAdd', sql.Int, DurationMonths)
             .query(`
-                INSERT INTO UserSubscriptions (UserId, PlanId, PlanName, StartDate, EndDate, Status)
+                INSERT INTO UserSubscriptions (UserId, PlanId, StartDate, EndDate, Status)
                 OUTPUT INSERTED.StartDate, INSERTED.EndDate
                 VALUES (
                     @UserId, 
                     @PlanId, 
-                    @PlanName,
                     GETDATE(), 
                     CASE 
                         WHEN @MonthsToAdd = 0 THEN DATEADD(day, 7, GETDATE()) 
@@ -88,7 +109,7 @@ const activateUserSubscription = async (req, res) => {
                 )
             `);
 
-        // THE MAGIC: DEFAULT DOCTOR LOCK-IN (Only if DurationMonths > 0)
+        // Lock-in Default Doctor if it's a long term plan
         if (DurationMonths > 0) {
             const prescribedDoctor = await pool.request()
                 .input('UserId', sql.Int, targetUserId)
@@ -110,17 +131,22 @@ const activateUserSubscription = async (req, res) => {
                 console.log(`[SYSTEM] Patient ${targetUserId} permanently locked to Default Doctor ${defaultDoctorId}.`);
             }
         }
-
-        return res.json({              
+        
+        console.log(`[SYSTEM] Subscription ${PlanName} auto-activated for User ${targetUserId}.`);
+        return { 
             success: true, 
             data: insertResult.recordset[0],
             message: `Successfully activated ${PlanName} for the user.` 
-        });
+        };
 
     } catch (error) {
-        console.error("[Subscription] Activate Subscription Error:", error);
-        return res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
+        console.error("[Internal Activation Error]:", error.message);
+        return { success: false, message: error.message };
     }
 };
-
-module.exports = { getAvailablePlans, activateUserSubscription };
+// Export all the required modules!
+module.exports = { 
+    getAvailablePlans, 
+    activateUserSubscription,
+    activateSubscriptionInternal   
+};

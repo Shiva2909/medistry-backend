@@ -1,7 +1,9 @@
 const crypto = require('crypto');
-const razorpay = require('../utils/razorpayInstance'); // Tera utils wala instance
+const razorpay = require('../utils/razorpayInstance');
 const { connectDB, sql } = require('../db');
 const Razorpay = require('razorpay');
+// 👇 Naya internal function import kar liya 👇
+const { activateSubscriptionInternal } = require('./subscriptionController'); 
 
 /**
  * 1. CREATE ORDER (Zero-Trust Model)
@@ -28,7 +30,6 @@ const createOrder = async (req, res) => {
             if (!doc.recordset.length) return res.status(404).json({ success: false, message: "Doctor not found" });
             amountInRupees = doc.recordset[0].ConsultationFee;
         }
-        // Add similar conditions for 'BloodTest' and 'Medicine' based on your tables
         else {
             return res.status(400).json({ success: false, message: "Invalid service type" });
         }
@@ -84,11 +85,6 @@ const verifyPayment = async (req, res) => {
             .update(sign.toString())
             .digest("hex");
 
-        // 👇👇 for debugging this payment keys mismatch issur👇👇
-        console.log("1. Backend Secret Key:", process.env.RAZORPAY_KEY_SECRET);
-        console.log("2. Expected Sign (Backend generated):", expectedSign);
-        console.log("3. Received Sign (Frontend sent):", razorpay_signature);    
-
         if (razorpay_signature !== expectedSign) {
             return res.status(400).json({ success: false, message: "Invalid payment signature. Payment rejected!" });
         }
@@ -109,23 +105,38 @@ const verifyPayment = async (req, res) => {
             return res.status(200).json({ success: true, message: "Payment already verified and captured." });
         }
 
-        // 4. Update DB Status to Captured
+        // 4. ENTERPRISE ADDITION: Fetch actual payment details from Razorpay to get the exact method (card, upi, netbanking)
+        let paymentMethod = 'Unknown';
+        try {
+            const rzpPaymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
+            paymentMethod = rzpPaymentDetails.method || 'Unknown';
+        } catch (fetchError) {
+            console.warn("[Payment] Could not fetch payment method from Razorpay:", fetchError.message);
+            // Non-blocking catch: We don't fail the verification if this single metadata fetch fails
+        }
+
+        // 5. Update DB Status to Captured along with the Payment Method
         await pool.request()
             .input('OrderId', sql.NVarChar, razorpay_order_id)
             .input('PaymentId', sql.NVarChar, razorpay_payment_id)
+            .input('PaymentMethod', sql.VarChar, paymentMethod) // 👇 Naya parameter pass kiya
             .query(`
                 UPDATE Payments 
-                SET PaymentStatus = 'Captured', RazorpayPaymentId = @PaymentId, UpdatedAt = GETDATE() 
+                SET PaymentStatus = 'Captured', 
+                    RazorpayPaymentId = @PaymentId, 
+                    PaymentMethod = @PaymentMethod, -- 👇 Column securely update kiya
+                    UpdatedAt = GETDATE() 
                 WHERE RazorpayOrderId = @OrderId
             `);
 
         // ==========================================
-        // 5. TRIGGER BUSINESS LOGIC (Service Activation)
+        // 6. TRIGGER BUSINESS LOGIC (Service Activation)
         // ==========================================
         if (payment.ServiceType === 'CareProgramme') {
-            // activateUserSubscription(payment.UserId, payment.ReferenceId); // Tera purana function call kar de yahan
+            // 👇 Internal API direct call hit hogi ab 👇
+            await activateSubscriptionInternal(payment.UserId, payment.ReferenceId); 
         } else if (payment.ServiceType === 'DoctorConsultation') {
-            // Confirm the appointment slot
+            // Confirm the appointment slot (To be added later)
         }
 
         return res.status(200).json({ success: true, message: "Payment successfully verified and service activated." });
@@ -160,7 +171,6 @@ const getPaymentStatus = async (req, res) => {
 /**
  * 4. WEBHOOK HANDLER (For Network Drops & Background sync)
  * @route POST /api/payments/razorpay/webhook
- * NOTE: Ensure your Express route uses express.raw() or express.json() properly so req.body matches the signature.
  */
 const webhookHandler = async (req, res) => {
     try {
@@ -182,15 +192,32 @@ const webhookHandler = async (req, res) => {
         const pool = await connectDB();
 
         if (event === 'payment.captured' || event === 'order.paid') {
-            await pool.request()
+            // Check current status before updating to avoid double-activation
+            const paymentCheck = await pool.request()
                 .input('OrderId', sql.NVarChar, orderId)
-                .input('PaymentId', sql.NVarChar, paymentId)
-                .query(`
-                    UPDATE Payments 
-                    SET PaymentStatus = 'Captured', RazorpayPaymentId = @PaymentId, UpdatedAt = GETDATE() 
-                    WHERE RazorpayOrderId = @OrderId AND PaymentStatus != 'Captured'
-                `);
-            // Note: If you need to trigger service activation from Webhook, do it here.
+                .query(`SELECT PaymentStatus, ServiceType, ReferenceId, UserId FROM Payments WHERE RazorpayOrderId = @OrderId`);
+                
+            if (paymentCheck.recordset.length > 0) {
+                const payment = paymentCheck.recordset[0];
+                
+                if (payment.PaymentStatus !== 'Captured') {
+                    // Update DB to Captured
+                    await pool.request()
+                        .input('OrderId', sql.NVarChar, orderId)
+                        .input('PaymentId', sql.NVarChar, paymentId)
+                        .query(`
+                            UPDATE Payments 
+                            SET PaymentStatus = 'Captured', RazorpayPaymentId = @PaymentId, UpdatedAt = GETDATE() 
+                            WHERE RazorpayOrderId = @OrderId
+                        `);
+                        
+                    // 👇 Webhook se background activation 👇
+                    if (payment.ServiceType === 'CareProgramme') {
+                        await activateSubscriptionInternal(payment.UserId, payment.ReferenceId);
+                        console.log(`[Webhook] Subscription activated via Webhook for Order: ${orderId}`);
+                    }
+                }
+            }
         } 
         else if (event === 'payment.failed') {
             await pool.request()
@@ -217,13 +244,11 @@ const webhookHandler = async (req, res) => {
  */
 const initiateRefund = async (req, res) => {
     try {
-        // Assume req.user.role === 'ADMIN' is checked via middleware before reaching here
         const { paymentId } = req.params;
         const pool = await connectDB();
 
-        // Check if payment exists and is captured
         const paymentCheck = await pool.request()
-            .input('PaymentId', sql.Int, paymentId)
+            .input('PaymentId', sql.Int, paymentId)        
             .query(`SELECT RazorpayPaymentId, AmountInPaise, PaymentStatus FROM Payments WHERE PaymentId = @PaymentId`);
 
         if (!paymentCheck.recordset.length) return res.status(404).json({ success: false, message: "Payment not found." });
@@ -235,7 +260,7 @@ const initiateRefund = async (req, res) => {
 
         // Call Razorpay API to process refund
         const refundResponse = await razorpay.payments.refund(payment.RazorpayPaymentId, {
-            amount: payment.AmountInPaise // Full refund. Pass lesser amount for partial refund.
+            amount: payment.AmountInPaise 
         });
 
         // Update DB with refund details
