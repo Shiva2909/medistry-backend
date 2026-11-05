@@ -16,7 +16,7 @@ const {
 // CHAT API ROUTES
 // ==========================================
 
-// 1. Initialize Doctor-Patient Chat Session (Jo tune sabse pehle banaya tha)
+// 1. Initialize Doctor-Patient Chat Session 
 router.post('/init', authenticateToken, initializeChatSession);
 
 // 2. Get Doctor-Patient Consultation History

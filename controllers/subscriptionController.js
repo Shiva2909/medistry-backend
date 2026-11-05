@@ -63,10 +63,7 @@ const activateUserSubscription = async (req, res) => {
     }
 };
 
-// ========================================================================
-// INTERNAL FUNCTION (Called by Payment Controller after successful payment)
-// ========================================================================
-// ========================================================================
+
 // INTERNAL FUNCTION (Called by Payment Controller after successful payment)
 // ========================================================================
 const activateSubscriptionInternal = async (targetUserId, planId) => {

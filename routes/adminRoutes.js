@@ -2,59 +2,54 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
 
+// 👇 1. Yahan apne middleware import kar (path apne project ke hisaab se adjust kar lena agar alag ho)
+const { authenticateToken, authorizeRoles } = require('../middleware/auth'); 
+
 /**
  * ============================================================================
- * ADMIN MODULE ROUTES
+ * ADMIN MODULE ROUTES (SECURED)
  * ============================================================================
- * NOTE: Authentication and Role-based middleware (e.g., authenticateToken, 
- * verifyAdminRole) are temporarily bypassed to facilitate seamless API 
- * testing via Postman. Ensure these are re-enabled before production deployment.
+ * NOTE: Authentication and Role-based middleware are now ACTIVE.
+ * Only users with a valid JWT token containing role: 'ADMIN' can access these.
  */
 
 /**
  * @route   GET /api/admin/appointments
- * @desc    Retrieves a comprehensive list of all platform appointments, 
- *          including merged data for both patients and doctors. 
- *          Used for the main administrative monitoring dashboard.
- * @access  Admin (Currently Public for Testing)
+ * @desc    Retrieves a comprehensive list of all platform appointments.
+ * @access  Strictly Admin Only
  */
-router.get('/appointments', adminController.getAllAppointmentsForAdmin);
+router.get('/appointments', authenticateToken, authorizeRoles('ADMIN'), adminController.getAllAppointmentsForAdmin);
 
 /**
  * @route   GET /api/admin/doctor-history/:id
  * @desc    Fetches enterprise-level analytics for a specific doctor.
- *          Includes total patient volume, consultation completion rates, 
- *          and clinical trends (top diseases/reasons treated).
  * @param   {number} id The unique DoctorId from the database
- * @access  Admin (Currently Public for Testing)
+ * @access  Strictly Admin Only
  */
-router.get('/doctor-history/:id', adminController.getDoctorAnalytics);
+router.get('/doctor-history/:id', authenticateToken, authorizeRoles('ADMIN'), adminController.getDoctorAnalytics);
 
 /**
  * @route   GET /api/admin/patient-history/:id
- * @desc    Generates a complete Electronic Health Record (EHR) timeline 
- *          for a specific patient. Displays demographic data and their 
- *          entire chronological journey across different doctors on the platform.
+ * @desc    Generates a complete Electronic Health Record (EHR) timeline for a specific patient.
  * @param   {number} id The unique UserId of the patient from the database
- * @access  Admin (Currently Public for Testing)
+ * @access  Strictly Admin Only
  */
-router.get('/patient-history/:id', adminController.getPatientMedicalJourney);
+router.get('/patient-history/:id', authenticateToken, authorizeRoles('ADMIN'), adminController.getPatientMedicalJourney);
 
 /**
  * @route   PUT /api/admin/reports/:reportId/verify
- * @desc    Allows an admin to verify (Approve/Reject) a patient's uploaded 
- *          blood report. Approval is required to unlock the doctor consultation 
- *          booking flow for the patient.
+ * @desc    Allows an admin to verify (Approve/Reject) a patient's uploaded blood report.
  * @param   {number} reportId The unique ReportId from the PatientReports table
- * @access  Admin (Currently Public for Testing)
+ * @access  Strictly Admin Only
  */
-router.put('/reports/:reportId/verify', adminController.verifyPatientReport);
+router.put('/reports/:reportId/verify', authenticateToken, authorizeRoles('ADMIN'), adminController.verifyPatientReport);
 
-
-
-
-
-// for assigning a new doctor id assign doctor of a patient is not avalaible for cunsultation
-router.put('/patients/:patientId/reassign', adminController.reassignPatientDoctor);
+/**
+ * @route   PUT /api/admin/patients/:patientId/reassign
+ * @desc    Assigns a new default doctor to a patient if their current one is unavailable.
+ * @param   {number} patientId The unique UserId of the patient
+ * @access  Strictly Admin Only
+ */
+router.put('/patients/:patientId/reassign', authenticateToken, authorizeRoles('ADMIN'), adminController.reassignPatientDoctor);
 
 module.exports = router;

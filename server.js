@@ -340,8 +340,9 @@
 // // Note: server.listen boots BOTH the Express REST API and the Socket.IO Engine
 // server.listen(PORT, async () => {
 //     console.log(`🚀 Medistry Server is running on port = ${PORT}`);
-//     await connectDB();                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+//     await connectDB();       ]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
 // });      
+require('./utils/cronJobs')();
 const express = require('express');
 const jwt = require('jsonwebtoken'); 
 const http = require('http'); // Required to run both Express and Socket.IO on the same port
@@ -364,11 +365,10 @@ const app = express();
 app.use(cors());
 
 // 🚨 CRITICAL FIX FOR RAZORPAY WEBHOOK 🚨
-// Webhook ko raw payload chahiye signature validation ke liye. 
-// Is route ko standard express.json() se pehle define karna ZAROORI hai.
+// Webhook from Razorpay sends raw JSON payload, so we need to use express.raw() middleware for that specific route. This ensures the signature verification works correctly.
 app.use('/api/payments/razorpay/webhook', express.raw({ type: 'application/json' }));
 
-// Standard Body Parser Middleware (Baaki sab APIs ke liye)
+// Standard Body Parser Middleware fro remaining all routes (JSON payloads)
 app.use(express.json());
 
 // Expose the uploads folder so frontend can access shared files/images via URL
@@ -428,55 +428,52 @@ const server = http.createServer(app);
 // Initialize Socket.IO instance
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allows any frontend domain to connect. Change this in production.
+        origin: "*", 
         methods: ["GET", "POST"]
     }
 });
-
 
 // =========================================================================
 // [NEW] SOCKET.IO AUTHENTICATION MIDDLEWARE (The Gatekeeper)
 // =========================================================================
 io.use((socket, next) => {
-    // 1. recieve token from frontend
-    const token = socket.handshake.auth.token;
+    // 1. Receive token from frontend (either via auth or headers)
+    const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(' ')[1];
 
-    // 2. id token is not present then reject tha request
     if (!token) {
         console.log("🚫 Connection Rejected: Token missing");
         return next(new Error("Authentication error: Token missing"));
     }
 
     try {
-        // 3. verify token with secret key
+        // 2. Verify token with secret key
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         
-        // 4. token is coreent save user infor userid and role
+        // 3. Token is valid, attach user info to socket for later use
         socket.user = decoded; 
-        
-        // 5. Connection allowed
         next(); 
     } catch (err) {
         console.log("🚫 Connection Rejected: Invalid/Expired Token");
-        return next(new Error("Authentication error: Invalid or expired token"));
+        return next(new Error("Authentication error: Invalid or expired token. Please login again."));
     }
 });
 
-
-
 io.on('connection', (socket) => {
-    console.log(`🔌 New Web-Socket Connected: ${socket.id}`);
+    console.log(`🔌 New Web-Socket Connected: ${socket.id} (UserId: ${socket.user.userId})`);
 
     // ---------------------------------------------------------------------
     // SYSTEM A: PRIVATE DOCTOR-PATIENT CONSULTATION
     // ---------------------------------------------------------------------
     socket.on('join_consultation', (sessionId) => {
         socket.join(`consultation_${sessionId}`);
-        console.log(`⚕️ User joined Medical Room: consultation_${sessionId}`);
+        console.log(`⚕️ User ${socket.user.userId} joined Medical Room: consultation_${sessionId}`);
     });
 
     socket.on('send_consultation_message', async (data) => {
-        const { sessionId, senderUserId, senderRole, messageType, messageText, fileUrl } = data;
+        // Destructure the incoming data        
+        const { sessionId, messageType, messageText, fileUrl } = data;
+        const senderUserId = socket.user.userId; 
+        const senderRole = socket.user.role.toUpperCase();
 
         try {
             const pool = await connectDB();
@@ -490,13 +487,13 @@ io.on('connection', (socket) => {
             }
 
             const session = sessionCheck.recordset[0];
-            const role = senderRole.toUpperCase();
             let isAuthorized = false;
 
-            if (role === 'PATIENT' && session.PatientId === senderUserId) {
+            // Authorization Logic
+            if (senderRole === 'PATIENT' && session.PatientId === senderUserId) {
                 isAuthorized = true; 
             } 
-            else if (role === 'DOCTOR') {
+            else if (senderRole === 'DOCTOR') {
                 const doctorProfile = await pool.request()
                     .input('UserId', sql.Int, senderUserId)
                     .query(`SELECT DoctorId FROM Doctors WHERE UserId = @UserId`);
@@ -511,12 +508,24 @@ io.on('connection', (socket) => {
                 return socket.emit('error_message', { message: 'Unauthorized medical access blocked.' });
             }
 
-            io.to(`consultation_${sessionId}`).emit('receive_consultation_message', data);
+            // Broadcast the message securely to the specific room
+            const secureMessagePayload = {
+                sessionId,
+                senderUserId,
+                senderRole,
+                messageType: messageType || 'TEXT',
+                messageText: messageText || '',
+                fileUrl: fileUrl || null,
+                createdAt: new Date().toISOString()
+            };
 
+            io.to(`consultation_${sessionId}`).emit('receive_consultation_message', secureMessagePayload);
+
+            // DB Save
             await pool.request()
                 .input('SessionId', sql.Int, sessionId)
                 .input('SenderId', sql.Int, senderUserId) 
-                .input('SenderRole', sql.VarChar, role) 
+                .input('SenderRole', sql.VarChar, senderRole) 
                 .input('MessageType', sql.VarChar, messageType || 'TEXT')
                 .input('MessageText', sql.NVarChar, messageText || '')
                 .input('FileUrl', sql.NVarChar, fileUrl || null)
@@ -530,7 +539,6 @@ io.on('connection', (socket) => {
         }
     });
 
-
     // ---------------------------------------------------------------------
     // SYSTEM B: HELPDESK & IT SUPPORT (Ticket-Based)
     // ---------------------------------------------------------------------
@@ -540,13 +548,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('send_support_message', async (data) => {
-        const { supportUserId, senderUserId, senderRole, messageText, fileUrl } = data;
+        // Destructure the incoming data
+        const { supportUserId, messageText, fileUrl } = data;
+        const senderUserId = socket.user.userId;
+        const senderRole = socket.user.role.toUpperCase();
 
         try {
-            const role = senderRole.toUpperCase();
             let isAuthorized = false;
 
-            if (role === 'ADMIN' || role === 'IT') {
+            if (senderRole === 'ADMIN' || senderRole === 'IT') {
                 isAuthorized = true; 
             } else if (senderUserId === supportUserId) {
                 isAuthorized = true; 
@@ -557,7 +567,16 @@ io.on('connection', (socket) => {
                 return socket.emit('error_message', { message: 'Unauthorized support access blocked.' });
             }
 
-            io.to(`support_${supportUserId}`).emit('receive_support_message', data);
+            const secureSupportPayload = {
+                supportUserId,
+                senderUserId,
+                senderRole,
+                messageText: messageText || '',
+                fileUrl: fileUrl || null,
+                createdAt: new Date().toISOString()
+            };
+
+            io.to(`support_${supportUserId}`).emit('receive_support_message', secureSupportPayload);
 
             const pool = await connectDB();
             let ticketId;
@@ -584,7 +603,7 @@ io.on('connection', (socket) => {
             await pool.request()
                 .input('TicketId', sql.Int, ticketId)
                 .input('SenderId', sql.Int, senderUserId)
-                .input('SenderRole', sql.VarChar, role)
+                .input('SenderRole', sql.VarChar, senderRole)
                 .input('MessageText', sql.NVarChar, messageText || '')
                 .input('FileUrl', sql.NVarChar, fileUrl || null)
                 .query(`
@@ -592,7 +611,7 @@ io.on('connection', (socket) => {
                     VALUES (@TicketId, @SenderId, @SenderRole, @MessageText, @FileUrl, 0)
                 `);
             
-            console.log(`💾 Support message saved for Ticket #${ticketId} by ${role}`);
+            console.log(`💾 Support message saved for Ticket #${ticketId} by ${senderRole}`);
 
         } catch (err) {
             console.error("❌ Support Chat DB Error:", err);
@@ -603,8 +622,6 @@ io.on('connection', (socket) => {
         console.log(`❌ User Disconnected: ${socket.id}`);
     });
 });
-
-
 // =========================================================================
 // PART 3: SERVER STARTUP
 // =========================================================================
